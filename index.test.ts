@@ -550,7 +550,7 @@ describe("ask_user", () => {
 		);
 
 		expect(result.isError).not.toBe(true);
-		expect(rendered).toContain("Details");
+		expect(rendered).toContain("## Alpha");
 		expect(rendered).toContain("The alpha option keeps the rollout conservative.");
 	});
 
@@ -588,7 +588,7 @@ describe("ask_user", () => {
 
 		expect(result.isError).not.toBe(true);
 		expect(rendered).toContain("Custom response");
-		expect(rendered).toContain("Open the editor to write any answer.");
+		expect(rendered).toContain("Open the editor to write **any** answer.");
 	});
 
 	test("falls back to the single-column list on narrow widths", async () => {

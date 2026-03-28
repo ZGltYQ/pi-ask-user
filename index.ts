@@ -27,7 +27,11 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
-import { renderSingleSelectRows, type QuestionOption } from "./single-select-layout";
+import { renderSingleSelectRows } from "./single-select-layout";
+
+import { createRequire } from "node:module";
+const _require = createRequire(import.meta.url);
+const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
 
 type AskOptionInput = QuestionOption | string;
 
@@ -124,13 +128,25 @@ class BoxBorderTop implements Component {
 
 class BoxBorderBottom implements Component {
 	private color: (s: string) => string;
-	constructor(color: (s: string) => string) {
+	private label?: string;
+	private labelColor?: (s: string) => string;
+	constructor(color: (s: string) => string, label?: string, labelColor?: (s: string) => string) {
 		this.color = color;
+		this.label = label;
+		this.labelColor = labelColor;
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
 		const inner = Math.max(0, width - 2);
-		return [this.color(`╰${"─".repeat(inner)}╯`)];
+		if (!this.label || inner < this.label.length + 4) {
+			return [this.color(`╰${"─".repeat(inner)}╯`)];
+		}
+		const tag = ` ${this.label} `;
+		const leftDashes = inner - tag.length - 1;
+		const style = this.labelColor ?? this.color;
+		return [
+			this.color("╰" + "─".repeat(Math.max(0, leftDashes))) + style(tag) + this.color("─╯"),
+		];
 	}
 }
 
@@ -481,53 +497,53 @@ class WrappedSingleSelectList implements Component {
 	private buildPreviewLines(width: number, filteredOptions: QuestionOption[], maxLines: number): string[] {
 		if (maxLines <= 0) return [];
 
-		const lines: string[] = [];
-		const pushWrapped = (text: string, style: (line: string) => string): void => {
-			for (const line of wrapTextWithAnsi(text, Math.max(10, width))) {
-				lines.push(truncateToWidth(style(line), width, ""));
-			}
-		};
-		const pushBlank = (): void => {
-			if (lines.length === 0 || lines[lines.length - 1] !== "") {
-				lines.push("");
-			}
-		};
+		let mdTheme: MarkdownTheme | undefined;
+		try {
+			mdTheme = getMarkdownTheme();
+		} catch {}
 
-		pushWrapped("Details", (line) => this.theme.fg("accent", this.theme.bold(line)));
-		pushBlank();
+		// Build a markdown string for the preview content
+		let md = "";
 
 		if (this.isFreeformRow(this.selectedIndex, filteredOptions)) {
-			pushWrapped("Custom response", (line) => this.theme.fg("text", this.theme.bold(line)));
-			pushBlank();
-			pushWrapped("Open the editor to write any answer.", (line) => this.theme.fg("text", line));
-			pushBlank();
-			pushWrapped("Use this when none of the listed options fit.", (line) => this.theme.fg("muted", line));
+			md += "## Custom response\n\n";
+			md += "Open the editor to write **any** answer.\n\n";
+			md += "*Use this when none of the listed options fit.*\n";
 			if (this.searchQuery) {
-				pushBlank();
-				pushWrapped(`Current filter: ${this.searchQuery}`, (line) => this.theme.fg("dim", line));
+				md += `\n> Current filter: \`${this.searchQuery}\`\n`;
 			}
 		} else {
 			const selected = filteredOptions[this.selectedIndex];
 			if (!selected) {
-				pushWrapped("No option selected", (line) => this.theme.fg("muted", line));
+				md += "*No option selected*\n";
 			} else {
-				pushWrapped(selected.title, (line) => this.theme.fg("text", this.theme.bold(line)));
-				pushBlank();
+				md += `## ${selected.title}\n\n`;
 				if (selected.description?.trim()) {
-					pushWrapped(selected.description, (line) => this.theme.fg("text", line));
+					md += `${selected.description}\n`;
 				} else {
-					pushWrapped("No additional details provided for this option.", (line) => this.theme.fg("muted", line));
+					md += "*No additional details provided for this option.*\n";
 				}
-				pushBlank();
-				pushWrapped("Press Enter to select this option.", (line) => this.theme.fg("dim", line));
+				md += `\n---\n\nPress \`Enter\` to select this option.\n`;
 				if (this.searchQuery) {
-					pushBlank();
-					pushWrapped(`Filter: ${this.searchQuery}`, (line) => this.theme.fg("dim", line));
+					md += `\n> Filter: \`${this.searchQuery}\`\n`;
 				}
 			}
 		}
 
-		while (lines.length > 0 && lines[lines.length - 1] === "") {
+		// Render via Markdown component if theme is available, otherwise fall back to plain text
+		let lines: string[];
+		if (mdTheme) {
+			const mdComponent = new Markdown(md.trim(), 0, 0, mdTheme);
+			lines = mdComponent.render(width);
+		} else {
+			lines = [];
+			for (const line of wrapTextWithAnsi(md.trim(), Math.max(10, width))) {
+				lines.push(truncateToWidth(line, width, ""));
+			}
+		}
+
+		// Trim trailing blanks
+		while (lines.length > 0 && lines[lines.length - 1]?.trim() === "") {
 			lines.pop();
 		}
 
@@ -733,7 +749,11 @@ class AskComponent extends Container {
 		this.addChild(this.helpText);
 
 		this.addChild(new Spacer(1));
-		this.addChild(new BoxBorderBottom((s: string) => theme.fg("accent", s)));
+		this.addChild(new BoxBorderBottom(
+			(s: string) => theme.fg("accent", s),
+			`v${ASK_USER_VERSION}`,
+			(s: string) => theme.fg("dim", s),
+		));
 
 		this.updateStaticText();
 		this.showSelectMode();
@@ -766,7 +786,7 @@ class AskComponent extends Container {
 			if (index === 0 || index === rawLines.length - 1) {
 				// Box top/bottom borders already rendered at innerWidth — re-render at full width
 				if (index === 0) return new BoxBorderTop(borderColor, "ask_user", titleColor).render(width)[0];
-				return new BoxBorderBottom(borderColor).render(width)[0];
+				return new BoxBorderBottom(borderColor, `v${ASK_USER_VERSION}`, (s: string) => this.theme.fg("dim", s)).render(width)[0];
 			}
 			const padded = truncateToWidth(line, innerWidth, "", true);
 			return `${borderColor(BOX_BORDER_LEFT)}${padded}${borderColor(BOX_BORDER_RIGHT)}`;
@@ -951,11 +971,11 @@ export default function (pi: ExtensionAPI) {
 		name: "ask_user",
 		label: "Ask User",
 		description:
-			"Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Before calling, gather context with tools (read/exa/ref) and pass a short summary via the context field.",
+			"Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Before calling, gather context with tools (read/web/ref) and pass a short summary via the context field.",
 		promptSnippet:
 			"Ask the user a question with optional multiple-choice answers to gather information interactively",
 		promptGuidelines: [
-			"Before calling ask_user, gather context with tools (read/exa/ref) and pass a short summary via the context field.",
+			"Before calling ask_user, gather context with tools (read/web/ref) and pass a short summary via the context field.",
 			"Use ask_user when the user's intent is ambiguous, when a decision requires explicit user input, or when multiple valid options exist.",
 		],
 		parameters: Type.Object({
