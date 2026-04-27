@@ -156,7 +156,7 @@ function createTheme() {
 }
 
 describe("ask_user", () => {
-   test("does not hide the overlay on narrow terminals", async () => {
+   test("renders in full-screen mode without overlay options", async () => {
       const tool = await setupTool();
       let capturedOptions: any;
 
@@ -179,8 +179,7 @@ describe("ask_user", () => {
          },
       );
 
-      expect(capturedOptions.overlay).toBe(true);
-      expect(capturedOptions.overlayOptions.visible).toBeUndefined();
+      expect(capturedOptions).toBeUndefined();
    });
 
    test("renders partial updates as waiting state instead of a successful empty answer", async () => {

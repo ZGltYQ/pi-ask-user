@@ -1,6 +1,6 @@
 {
-  "name": "pi-ask-user",
-  "version": "0.6.1",
+  "name": "@zgltyq/pi-ask-user",
+  "version": "0.7.0",
   "description": "Interactive ask_user tool for pi-coding-agent with searchable split-pane selection UI, multi-select, and freeform input",
   "type": "module",
   "keywords": [
@@ -13,15 +13,18 @@
     "interactive"
   ],
   "author": "Enzo Lucchesi <enzo@edl.sh>",
+  "contributors": [
+    "ZGltYQ"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/edlsh/pi-ask-user.git"
+    "url": "git+https://github.com/ZGltYQ/pi-ask-user.git"
   },
   "bugs": {
-    "url": "https://github.com/edlsh/pi-ask-user/issues"
+    "url": "https://github.com/ZGltYQ/pi-ask-user/issues"
   },
-  "homepage": "https://github.com/edlsh/pi-ask-user#readme",
+  "homepage": "https://github.com/ZGltYQ/pi-ask-user#readme",
   "publishConfig": {
     "access": "public"
   },

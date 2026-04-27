@@ -5,7 +5,7 @@
  * and a custom box border instead of manual ANSI box drawing.
  */
 
-import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
@@ -27,11 +27,7 @@ import {
    truncateToWidth,
    wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
-import { renderSingleSelectRows } from "./single-select-layout";
-
-import { createRequire } from "node:module";
-const _require = createRequire(import.meta.url);
-const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
+import { renderSingleSelectRows, type QuestionOption } from "./single-select-layout";
 
 type AskOptionInput = QuestionOption | string;
 
@@ -229,9 +225,6 @@ function isCommentToggleKey(data: string): boolean {
 
 type AskMode = "select" | "freeform" | "comment";
 
-const ASK_OVERLAY_MAX_HEIGHT_RATIO = 0.85;
-const ASK_OVERLAY_WIDTH = "92%";
-const ASK_OVERLAY_MIN_WIDTH = 40;
 const SINGLE_SELECT_SPLIT_PANE_MIN_WIDTH = 84;
 const SINGLE_SELECT_SPLIT_PANE_LEFT_MIN_WIDTH = 32;
 const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
@@ -248,6 +241,7 @@ class MultiSelectList implements Component {
    private selectedIndex = 0;
    private checked = new Set<number>();
    private commentEnabled = false;
+   private maxVisibleRows = 10;
    private cachedWidth?: number;
    private cachedLines?: string[];
 
@@ -271,6 +265,14 @@ class MultiSelectList implements Component {
 
    public isCommentEnabled(): boolean {
       return this.commentEnabled;
+   }
+
+   setMaxVisibleRows(rows: number): void {
+      const next = Math.max(1, Math.floor(rows));
+      if (next !== this.maxVisibleRows) {
+         this.maxVisibleRows = next;
+         this.invalidate();
+      }
    }
 
    invalidate(): void {
@@ -340,7 +342,7 @@ class MultiSelectList implements Component {
          return;
       }
 
-      const numMatch = data.match(/^[1-9]$/);
+      const numMatch = data.match(/^[1-9][0-9]?$/);
       if (numMatch) {
          const idx = Number.parseInt(numMatch[0], 10) - 1;
          if (idx >= 0 && idx < this.options.length) {
@@ -395,7 +397,7 @@ class MultiSelectList implements Component {
 
       const theme = this.theme;
       const count = this.getItemCount();
-      const maxVisible = Math.min(count, 10);
+      const maxVisible = Math.min(count, this.maxVisibleRows);
 
       if (count === 0) {
          this.cachedLines = [theme.fg("warning", "No options")];
@@ -565,6 +567,7 @@ class WrappedSingleSelectList implements Component {
    private styleListLine(line: string, width: number, isSelected: boolean): string {
       const trimmed = line.trim();
 
+      // Scroll indicator like "(3/10)"
       if (trimmed.startsWith("(")) {
          return truncateToWidth(this.theme.fg("dim", line), width, "");
       }
@@ -573,12 +576,9 @@ class WrappedSingleSelectList implements Component {
          return truncateToWidth(this.theme.fg("accent", this.theme.bold(line)), width, "");
       }
 
+      // Description lines (indented) use muted color
       if (line.startsWith("      ")) {
          return truncateToWidth(this.theme.fg("muted", line), width, "");
-      }
-
-      if (line.startsWith("→")) {
-         return truncateToWidth(this.theme.fg("accent", this.theme.bold(line)), width, "");
       }
 
       return truncateToWidth(this.theme.fg("text", line), width, "");
@@ -824,6 +824,7 @@ class AskComponent extends Container {
    private pendingSelections: string[] = [];
    private freeformDraft = "";
    private commentDraft = "";
+   private doneCalled = false;
 
    // Static layout components
    private titleText: Text;
@@ -831,6 +832,8 @@ class AskComponent extends Container {
    private contextComponent?: Component;
    private modeContainer: Container;
    private helpText: Text;
+   private borderTop: BoxBorderTop;
+   private borderBottom: BoxBorderBottom;
 
    // Mode components
    private singleSelectList?: WrappedSingleSelectList;
@@ -845,7 +848,7 @@ class AskComponent extends Container {
    set focused(value: boolean) {
       this._focused = value;
       if (this.editor && (this.mode === "freeform" || this.mode === "comment")) {
-         (this.editor as any).focused = value;
+         this.editor.focused = value;
       }
    }
 
@@ -875,11 +878,12 @@ class AskComponent extends Container {
       this.onDone = onDone;
 
       // Layout skeleton
-      this.addChild(new BoxBorderTop(
+      this.borderTop = new BoxBorderTop(
          (s: string) => theme.fg("accent", s),
          "ask_user",
          (s: string) => theme.fg("dim", theme.bold(s)),
-      ));
+      );
+      this.addChild(this.borderTop);
       this.addChild(new Spacer(1));
 
       this.titleText = new Text("", 1, 0);
@@ -913,11 +917,10 @@ class AskComponent extends Container {
       this.addChild(this.helpText);
 
       this.addChild(new Spacer(1));
-      this.addChild(new BoxBorderBottom(
+      this.borderBottom = new BoxBorderBottom(
          (s: string) => theme.fg("accent", s),
-         `v${ASK_USER_VERSION}`,
-         (s: string) => theme.fg("dim", s),
-      ));
+      );
+      this.addChild(this.borderBottom);
 
       this.updateStaticText();
       this.showSelectMode();
@@ -932,11 +935,14 @@ class AskComponent extends Container {
    override render(width: number): string[] {
       const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
 
-      if (this.mode === "select" && !this.allowMultiple) {
-         const overlayMaxHeight = Math.max(12, Math.floor(this.tui.terminal.rows * ASK_OVERLAY_MAX_HEIGHT_RATIO));
+      if (this.mode === "select") {
          const staticLines = this.countStaticLines(innerWidth);
-         const availableOptionRows = Math.max(4, overlayMaxHeight - staticLines);
-         this.ensureSingleSelectList().setMaxVisibleRows(availableOptionRows);
+         const availableOptionRows = Math.max(4, this.tui.terminal.rows - staticLines);
+         if (this.allowMultiple) {
+            this.ensureMultiSelectList().setMaxVisibleRows(availableOptionRows);
+         } else {
+            this.ensureSingleSelectList().setMaxVisibleRows(availableOptionRows);
+         }
       }
 
       // Render children at the inner width (excluding side border characters)
@@ -945,13 +951,9 @@ class AskComponent extends Container {
       // First and last lines are the top/bottom box borders — pass through at full width.
       // All inner lines get wrapped with side borders.
       const borderColor = (s: string) => this.theme.fg("accent", s);
-      const titleColor = (s: string) => this.theme.fg("dim", this.theme.bold(s));
       return rawLines.map((line, index) => {
-         if (index === 0 || index === rawLines.length - 1) {
-            // Box top/bottom borders already rendered at innerWidth — re-render at full width
-            if (index === 0) return new BoxBorderTop(borderColor, "ask_user", titleColor).render(width)[0];
-            return new BoxBorderBottom(borderColor, `v${ASK_USER_VERSION}`, (s: string) => this.theme.fg("dim", s)).render(width)[0];
-         }
+         if (index === 0) return this.borderTop.render(width)[0];
+         if (index === rawLines.length - 1) return this.borderBottom.render(width)[0];
          const padded = truncateToWidth(line, innerWidth, "", true);
          return `${borderColor(BOX_BORDER_LEFT)}${padded}${borderColor(BOX_BORDER_RIGHT)}`;
       });
@@ -1050,7 +1052,7 @@ class AskComponent extends Container {
          this.keybindings,
       );
       list.onSubmit = (result) => this.handleSelectionSubmit([result], list.isCommentEnabled());
-      list.onCancel = () => this.onDone(null);
+      list.onCancel = () => this.safeOnDone(null);
       list.onEnterFreeform = () => this.showFreeformMode();
 
       this.singleSelectList = list;
@@ -1067,7 +1069,7 @@ class AskComponent extends Container {
          this.theme,
          this.keybindings,
       );
-      list.onCancel = () => this.onDone(null);
+      list.onCancel = () => this.safeOnDone(null);
       list.onSubmit = (result) => this.handleSelectionSubmit(result, list.isCommentEnabled());
       list.onEnterFreeform = () => this.showFreeformMode();
 
@@ -1088,10 +1090,7 @@ class AskComponent extends Container {
 
    private saveEditorDraft(): void {
       if (!this.editor) return;
-      const getText = (this.editor as any).getText;
-      if (typeof getText !== "function") return;
-
-      const currentText = String(getText.call(this.editor) ?? "");
+      const currentText = this.editor.getText();
       if (this.mode === "freeform") {
          this.freeformDraft = currentText;
       } else if (this.mode === "comment") {
@@ -1100,11 +1099,29 @@ class AskComponent extends Container {
    }
 
    private setEditorText(text: string): void {
-      const editor = this.ensureEditor();
-      const setText = (editor as any).setText;
-      if (typeof setText === "function") {
-         setText.call(editor, text);
+      this.ensureEditor().setText(text);
+   }
+
+   dispose(): void {
+      if (this.singleSelectList) {
+         this.singleSelectList.onSubmit = undefined;
+         this.singleSelectList.onCancel = undefined;
+         this.singleSelectList.onEnterFreeform = undefined;
       }
+      if (this.multiSelectList) {
+         this.multiSelectList.onSubmit = undefined;
+         this.multiSelectList.onCancel = undefined;
+         this.multiSelectList.onEnterFreeform = undefined;
+      }
+      if (this.editor) {
+         this.editor.onSubmit = undefined;
+      }
+   }
+
+   private safeOnDone(result: AskUIResult | null): void {
+      if (this.doneCalled) return;
+      this.doneCalled = true;
+      this.onDone(result);
    }
 
    private handleSelectionSubmit(selections: string[], wantsComment: boolean): void {
@@ -1115,18 +1132,18 @@ class AskComponent extends Container {
          return;
       }
 
-      this.onDone(createSelectionResponse(selections));
+      this.safeOnDone(createSelectionResponse(selections));
    }
 
    private handleEditorSubmit(text: string): void {
       if (this.mode === "freeform") {
-         this.onDone(createFreeformResponse(text));
+         this.safeOnDone(createFreeformResponse(text));
          return;
       }
 
       if (this.mode === "comment") {
          this.commentDraft = text;
-         this.onDone(createSelectionResponse(this.pendingSelections, text));
+         this.safeOnDone(createSelectionResponse(this.pendingSelections, text));
       }
    }
 
@@ -1160,7 +1177,7 @@ class AskComponent extends Container {
 
       const editor = this.ensureEditor();
       this.setEditorText(this.freeformDraft);
-      (editor as any).focused = this._focused;
+      editor.focused = this._focused;
 
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
       this.modeContainer.addChild(new Spacer(1));
@@ -1181,7 +1198,7 @@ class AskComponent extends Container {
 
       const editor = this.ensureEditor();
       this.setEditorText(this.commentDraft);
-      (editor as any).focused = this._focused;
+      editor.focused = this._focused;
 
       const selectedLabel = this.pendingSelections.length === 1 ? "Selected option:" : "Selected options:";
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold(selectedLabel)), 1, 0));
@@ -1202,7 +1219,7 @@ class AskComponent extends Container {
          }
 
          if (this.keybindings.matches(data, "tui.select.cancel")) {
-            this.onDone(null);
+            this.safeOnDone(null);
             return;
          }
 
@@ -1227,7 +1244,7 @@ class AskComponent extends Container {
  * ctx.ui.custom() returns undefined in RPC mode, so we degrade gracefully.
  */
 async function askViaDialogs(
-   ui: { select: Function; input: Function },
+   ui: Pick<ExtensionUIContext, "select" | "input">,
    question: string,
    context: string | undefined,
    options: QuestionOption[],
@@ -1401,13 +1418,25 @@ export default function(pi: ExtensionAPI) {
          try {
             const customResult = await ctx.ui.custom<AskUIResult | null>(
                (tui, theme, keybindings, done) => {
+                  let resolved = false;
+                  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+                  const safeDone = (result: AskUIResult | null) => {
+                     if (resolved) return;
+                     resolved = true;
+                     if (timeoutId !== undefined) clearTimeout(timeoutId);
+                     if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+                     done(result);
+                  };
+
+                  let onAbort: (() => void) | undefined;
                   if (signal) {
-                     const onAbort = () => done(null);
+                     onAbort = () => safeDone(null);
                      signal.addEventListener("abort", onAbort, { once: true });
                   }
 
                   if (timeout && timeout > 0) {
-                     setTimeout(() => done(null), timeout);
+                     timeoutId = setTimeout(() => safeDone(null), timeout);
                   }
 
                   return new AskComponent(
@@ -1420,18 +1449,8 @@ export default function(pi: ExtensionAPI) {
                      tui,
                      theme,
                      keybindings,
-                     done,
+                     safeDone,
                   );
-               },
-               {
-                  overlay: true,
-                  overlayOptions: {
-                     anchor: "center",
-                     width: ASK_OVERLAY_WIDTH,
-                     minWidth: ASK_OVERLAY_MIN_WIDTH,
-                     maxHeight: "85%",
-                     margin: 1,
-                  },
                },
             );
 
